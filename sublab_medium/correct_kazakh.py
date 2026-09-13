@@ -20,13 +20,16 @@ from sublab_easy.registration_bot import (RATES_PER_MTOK,  # noqa: E402
 DATA = Path(__file__).resolve().parent.parent / "data" / "kazakh_errors.json"
 
 # Every model you must run. Keep the order - it is the order of your table.
+# Per instructor approval, the three required OpenAI models are reached
+# through Groq instead of paying for OpenAI directly (gpt-5.6-luna/terra/sol
+# -> openai/gpt-oss-20b / openai/gpt-oss-120b / qwen/qwen3.6-27b).
 MODELS = [
     ("openrouter", "google/gemma-4-26b-a4b-it:free"),
     ("openrouter", "qwen/qwen3.8-27b"),
     ("openrouter", "deepseek/deepseek-v4-flash-0731"),
-    ("openai", "gpt-5.6-luna"),
-    ("openai", "gpt-5.6-terra"),
-    ("openai", "gpt-5.6-sol"),
+    ("groq", "openai/gpt-oss-20b"),
+    ("groq", "openai/gpt-oss-120b"),
+    ("groq", "qwen/qwen3.6-27b"),
 ]
 
 
@@ -49,8 +52,17 @@ def build_prompt(corrupted: str) -> str:
     Asking for a fixed shape instead of prose is how you make six models
     comparable. Week 3 turns this into a topic.
     """
-    # TODO
-    raise NotImplementedError
+    return (
+        "The following text is Kazakh and may contain errors: letters "
+        "replaced with visually similar Russian or Latin letters, a missing "
+        "hyphen, two words joined together, or a doubled letter. "
+        "Correct the text back to proper Kazakh.\n\n"
+        f"Text: {corrupted}\n\n"
+        "Respond with ONLY this JSON object and nothing else, no prose, no "
+        "markdown fences:\n"
+        '{"corrected": "the corrected sentence", "changes": ["short '
+        'description of each change you made"]}'
+    )
 
 
 def parse_response(text: str) -> dict:
@@ -60,8 +72,18 @@ def parse_response(text: str) -> dict:
     like. Be forgiving: find the JSON, parse it, and raise ValueError with the
     offending text if you truly cannot.
     """
-    # TODO
-    raise NotImplementedError
+    import re
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        raise ValueError(f"No JSON object found in response: {text!r}")
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Could not parse JSON from response: {text!r}") from exc
+    if "corrected" not in parsed:
+        raise ValueError(f"JSON missing 'corrected' key: {text!r}")
+    parsed.setdefault("changes", [])
+    return parsed
 
 
 def correct_with(model: str, corrupted: str, via: str) -> dict:
@@ -75,8 +97,16 @@ def correct_with(model: str, corrupted: str, via: str) -> dict:
     `ask_once` from sublab_easy - there is no conversation here, just one
     prompt and one reply, eight times per model.
     """
-    # TODO
-    raise NotImplementedError
+    prompt = build_prompt(corrupted)
+    result = ask_once(prompt, model=model, via=via)
+    parsed = parse_response(result["text"])
+    return {
+        "corrected": parsed["corrected"],
+        "changes": parsed["changes"],
+        "input_tokens": result["input_tokens"],
+        "output_tokens": result["output_tokens"],
+        "model": model,
+    }
 
 
 def score_correction(returned: str, expected: str) -> dict:
@@ -90,8 +120,10 @@ def score_correction(returned: str, expected: str) -> dict:
     the original still counts as a correction. Your written analysis is where
     you make that call.
     """
-    # TODO
-    raise NotImplementedError
+    exact = returned.strip() == expected.strip()
+    length_diff = abs(len(returned) - len(expected))
+    positional_diff = sum(1 for a, b in zip(returned, expected) if a != b)
+    return {"exact": exact, "char_diff": positional_diff + length_diff}
 
 
 def run_all() -> list[dict]:

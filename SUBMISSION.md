@@ -24,7 +24,7 @@ is not.
 
 >
 
-### Run 1 — OpenAI, `gpt-5.6-luna`
+### Run 1 — Groq, `openai/gpt-oss-20b` (standing in for `gpt-5.6-luna` per instructor approval)
 
 | Turn | Input tokens | Output tokens | Cost $ |
 |---|---|---|---|
@@ -51,7 +51,7 @@ is not.
 The turn where you asked for CSS-4090, which does not exist. Paste both replies
 exactly as they came back — do not tidy them.
 
-**OpenAI:**
+**Groq (`openai/gpt-oss-20b`, instructor-approved substitute for OpenAI):**
 
 ```
 
@@ -98,15 +98,15 @@ Paste the per-model summary printed by `correct_kazakh.py`:
 | google/gemma-4-26b-a4b-it:free | | | | |
 | qwen/qwen3.8-27b | | | | |
 | deepseek/deepseek-v4-flash-0731 | | | | |
-| gpt-5.6-luna | | | | |
-| gpt-5.6-terra | | | | |
-| gpt-5.6-sol | | | | |
+| openai/gpt-oss-20b (groq) | | | | |
+| openai/gpt-oss-120b (groq) | | | | |
+| qwen/qwen3.6-27b (groq) | | | | |
 
 ### Which error types did each model repair?
 
 Rows are error labels, columns are models. Write "yes", "no" or "partial".
 
-| Error type | gemma | qwen | deepseek | luna | terra | sol |
+| Error type | gemma | qwen3.8 (or) | deepseek | gpt-oss-20b | gpt-oss-120b | qwen3.6 (groq) |
 |---|---|---|---|---|---|---|
 | kaz_to_rus | | | | | | |
 | latin_homoglyph | | | | | | |

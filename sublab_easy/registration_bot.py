@@ -27,16 +27,25 @@ from openai import OpenAI
 load_dotenv()
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
 CATALOGUE = Path(__file__).resolve().parent.parent / "data" / "courses.json"
 
-# List price in USD per MILLION tokens, retrieved 2026-08-19. These drift.
-# Re-check before you quote them anywhere that matters.
+# List price in USD per MILLION tokens, retrieved 2026-09-08 from
+# console.groq.com/docs/models. These drift - re-check before you quote them
+# anywhere that matters.
+#
+# Per instructor approval, the three required OpenAI slots (gpt-5.6-luna /
+# terra / sol) are replaced with three Groq-hosted models of increasing size,
+# reached through Groq instead of paying for OpenAI directly:
+#   luna  -> openai/gpt-oss-20b   (smallest, cheapest)
+#   terra -> openai/gpt-oss-120b  (mid-size)
+#   sol   -> qwen/qwen3.6-27b     (largest, most expensive available on Groq)
 RATES_PER_MTOK = {
-    # OpenAI, called directly
-    "gpt-5.6-luna": (0.20, 1.20),
-    "gpt-5.6-terra": (2.00, 12.00),
-    "gpt-5.6-sol": (5.00, 30.00),
+    # Reached through Groq, standing in for the three required OpenAI models
+    "openai/gpt-oss-20b": (0.075, 0.30),
+    "openai/gpt-oss-120b": (0.15, 0.60),
+    "qwen/qwen3.6-27b": (0.60, 3.00),
     # Reached through OpenRouter
     "google/gemma-4-26b-a4b-it:free": (0.00, 0.00),
     "qwen/qwen3.8-27b": (0.45, 3.20),
@@ -70,17 +79,30 @@ def openrouter_client() -> OpenAI:
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY is not set. Copy .env.example to .env.")
-    # TODO: return an OpenAI client whose base_url is OPENROUTER_BASE_URL
-    raise NotImplementedError
+    return OpenAI(api_key=key, base_url=OPENROUTER_BASE_URL)
+
+
+def groq_client() -> OpenAI:
+    """A client pointed at Groq (also OpenAI-compatible).
+
+    Added beyond the assignment's required providers, to also compare against
+    Groq's hosted open-weight models.
+    """
+    key = os.environ.get("GROQ_API_KEY")
+    if not key:
+        raise RuntimeError("GROQ_API_KEY is not set. Copy .env.example to .env.")
+    return OpenAI(api_key=key, base_url=GROQ_BASE_URL)
 
 
 def client_for(via: str) -> OpenAI:
-    """Given. `via` is "openai" or "openrouter"."""
+    """Given. `via` is "openai", "openrouter" or "groq"."""
     if via == "openai":
         return openai_client()
     if via == "openrouter":
         return openrouter_client()
-    raise ValueError('via must be "openai" or "openrouter", got ' + repr(via))
+    if via == "groq":
+        return groq_client()
+    raise ValueError('via must be "openai", "openrouter" or "groq", got ' + repr(via))
 
 
 # --------------------------------------------------------------------------
@@ -107,16 +129,60 @@ def build_system_prompt(catalogue: dict) -> str:
     Returns:
         The system prompt, as a single string.
     """
-    # TODO
-    raise NotImplementedError
+    student = catalogue["student"]
+    rules = catalogue["rules"]
+
+    lines = []
+    lines.append(
+        "You are the course-registration assistant for Narxoz University, "
+        f"term {catalogue['term']}. You may ONLY use the information given "
+        "below. If the student asks about a course, code, or rule that is "
+        "not listed here, you MUST refuse and say clearly that it is not in "
+        "the catalogue - do not invent credits, schedules, instructors, or "
+        "seat counts under any circumstances, even if the course name sounds "
+        "plausible."
+    )
+    lines.append("")
+    lines.append(
+        f"Registration rules: a student may register for between "
+        f"{rules['min_credits']} and {rules['max_credits']} credits total. "
+        f"{rules['note']}"
+    )
+    lines.append("")
+    lines.append(
+        f"Student {student['student_id']} is a year {student['year']} "
+        f"{student['programme']} student who has already completed: "
+        f"{', '.join(student['completed'])}. Do not let them register again "
+        "for a course they have already completed."
+    )
+    lines.append("")
+    lines.append("Full course catalogue (this is the ONLY source of truth):")
+    for c in catalogue["courses"]:
+        schedule_str = "; ".join(
+            f"{s['day']} {s['start']}-{s['end']}" for s in c["schedule"]
+        )
+        seats_left = c["seats_total"] - c["seats_taken"]
+        prereq_str = ", ".join(c["prerequisites"]) if c["prerequisites"] else "none"
+        lines.append(
+            f"- {c['code']} \"{c['title']}\" | {c['credits']} credits | "
+            f"prerequisites: {prereq_str} | schedule: {schedule_str} | "
+            f"instructor: {c['instructor']} | seats left: {seats_left} of {c['seats_total']}"
+        )
+    lines.append("")
+    lines.append(
+        "When answering, check prerequisites completed, seats remaining, "
+        "schedule collisions with anything already chosen this session, and "
+        "the credit limit, before telling the student they can register."
+    )
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------
 # One turn
 # --------------------------------------------------------------------------
 
-def chat(messages: list[dict], model: str = "gpt-5.6-luna",
-         via: str = "openai") -> dict:
+def chat(messages: list[dict], model: str = "openai/gpt-oss-20b",
+         via: str = "groq") -> dict:
     """Send a whole message list and return the reply plus token usage.
 
     `messages` is the OpenAI format: a list of {"role": ..., "content": ...},
@@ -130,13 +196,31 @@ def chat(messages: list[dict], model: str = "gpt-5.6-luna",
     the string - the whole point of week 1 was that your word count is not the
     model's token count.
     """
-    # TODO: client_for(via).chat.completions.create(...), then pull the text
-    #       out of .choices and the counts out of .usage.
-    raise NotImplementedError
+    import time
+    import openai as openai_module
+
+    client = client_for(via)
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(model=model, messages=messages)
+            break
+        except openai_module.RateLimitError:
+            if attempt == max_retries - 1:
+                raise
+            wait = 2 ** attempt  # 1, 2, 4, 8, 16 seconds
+            print(f"    [rate limited, retrying in {wait}s ...]")
+            time.sleep(wait)
+    return {
+        "text": response.choices[0].message.content,
+        "input_tokens": response.usage.prompt_tokens,
+        "output_tokens": response.usage.completion_tokens,
+        "model": model,
+    }
 
 
-def ask_once(prompt: str, model: str = "gpt-5.6-luna",
-             via: str = "openai") -> dict:
+def ask_once(prompt: str, model: str = "openai/gpt-oss-20b",
+             via: str = "groq") -> dict:
     """Given. A one-shot call is just a conversation one message long."""
     return chat([{"role": "user", "content": prompt}], model=model, via=via)
 
@@ -150,8 +234,8 @@ def new_conversation(catalogue: dict) -> list[dict]:
     return [{"role": "system", "content": build_system_prompt(catalogue)}]
 
 
-def run_turn(history: list[dict], user_text: str, model: str = "gpt-5.6-luna",
-             via: str = "openai") -> tuple[list[dict], dict]:
+def run_turn(history: list[dict], user_text: str, model: str = "openai/gpt-oss-20b",
+             via: str = "groq") -> tuple[list[dict], dict]:
     """Given. One turn: append the user's message, send EVERYTHING, append the
     reply.
 
@@ -183,8 +267,7 @@ def estimate_cost(input_tokens: int, output_tokens: int,
     >>> estimate_cost(0, 0, 5.0, 30.0)
     0.0
     """
-    # TODO
-    raise NotImplementedError
+    return (input_tokens / 1_000_000) * rate_in + (output_tokens / 1_000_000) * rate_out
 
 
 def cost_of(usage: dict) -> float:
@@ -202,8 +285,7 @@ def conversation_cost(usages: list[dict]) -> float:
     >>> conversation_cost([])
     0.0
     """
-    # TODO
-    raise NotImplementedError
+    return sum((cost_of(u) for u in usages), 0.0)
 
 
 # --------------------------------------------------------------------------
@@ -217,7 +299,7 @@ SCRIPT = [
     "Register me for CSS-4007 and CSS-4102.",
     "How many credits would that be in total, and am I within the limit?",
     "Add CSS-4090 Quantum Machine Learning to my schedule.",
-    "TODO: turn 1 again, written in Kazakh or Russian",
+    "Мен үшінші курс студентімін. Мен әлі қандай курстарға тіркеле аламын?",
 ]
 
 
@@ -249,5 +331,5 @@ if __name__ == "__main__":
     if any(t.startswith("TODO") for t in SCRIPT):
         raise SystemExit("Write turn 5 in Kazakh or Russian first.")
 
-    run_script("gpt-5.6-luna", "openai")
+    run_script("openai/gpt-oss-20b", "groq")
     run_script("google/gemma-4-26b-a4b-it:free", "openrouter")
